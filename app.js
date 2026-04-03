@@ -12,23 +12,17 @@ app.use(express.json());
 app.use(cors());
 
 
-// ================= ROOT =================
-app.get("/", (req, res) => {
-    res.send("Finance Dashboard API is running...");
-});
-
-
-// ================= HELPER: ROLE CHECK =================
-const requireRole = (roles = []) => {
+// ✅ ROLE MIDDLEWARE
+const requireRole = (roles) => {
     return (req, res, next) => {
-        const role = req.headers.role;
+        const userRole = req.headers.role;
 
-        if (!role) {
+        if (!userRole) {
             return res.status(403).send("Role required");
         }
 
-        if (roles.length && !roles.includes(role)) {
-            return res.status(403).send("Access Denied");
+        if (!roles.includes(userRole)) {
+            return res.status(403).send("Access denied");
         }
 
         next();
@@ -36,9 +30,17 @@ const requireRole = (roles = []) => {
 };
 
 
-// ================= USERS =================
+// ✅ ROOT
+app.get("/", (req, res) => {
+    res.send("API is running with SQLite...");
+});
 
-// CREATE USER (ADMIN ONLY)
+
+// =======================
+// 👤 USER MANAGEMENT
+// =======================
+
+// ADD USER
 app.post("/add-user", requireRole(["admin"]), (req, res) => {
     const { name, email, role, status } = req.body;
 
@@ -46,53 +48,67 @@ app.post("/add-user", requireRole(["admin"]), (req, res) => {
         return res.status(400).send("Name and Email required");
     }
 
-    db.run(
-        "INSERT INTO users (name, email, role, status) VALUES (?, ?, ?, ?)",
-        [name, email, role || "viewer", status || "active"],
-        function (err) {
-            if (err) return res.status(500).send(err.message);
-            res.send("User added successfully!");
-        }
-    );
+    try {
+        db.prepare(`
+            INSERT INTO users (name, email, role, status)
+            VALUES (?, ?, ?, ?)
+        `).run(name, email, role || "viewer", status || "active");
+
+        res.send("User added successfully!");
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
-// GET USERS (ALL ROLES)
+
+// GET USERS
 app.get("/users", requireRole(["admin", "analyst", "viewer"]), (req, res) => {
-    db.all("SELECT * FROM users", [], (err, rows) => {
-        if (err) return res.status(500).send(err.message);
-        res.json(rows);
-    });
+    try {
+        const users = db.prepare("SELECT * FROM users").all();
+        res.json(users);
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
-// UPDATE USER (ADMIN)
+
+// UPDATE USER
 app.put("/update-user/:id", requireRole(["admin"]), (req, res) => {
-    const id = req.params.id;
+    const { id } = req.params;
     const { name, email, role, status } = req.body;
 
-    db.run(
-        "UPDATE users SET name=?, email=?, role=?, status=? WHERE id=?",
-        [name, email, role, status, id],
-        function (err) {
-            if (err) return res.status(500).send(err.message);
-            res.send("User updated successfully!");
-        }
-    );
+    try {
+        db.prepare(`
+            UPDATE users
+            SET name = ?, email = ?, role = ?, status = ?
+            WHERE id = ?
+        `).run(name, email, role, status, id);
+
+        res.send("User updated successfully!");
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
-// DELETE USER (ADMIN)
+
+// DELETE USER
 app.delete("/delete-user/:id", requireRole(["admin"]), (req, res) => {
-    const id = req.params.id;
+    const { id } = req.params;
 
-    db.run("DELETE FROM users WHERE id=?", id, function (err) {
-        if (err) return res.status(500).send(err.message);
+    try {
+        db.prepare("DELETE FROM users WHERE id = ?").run(id);
         res.send("User deleted successfully!");
-    });
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
 
-// ================= TRANSACTIONS =================
+// =======================
+// 💰 TRANSACTIONS
+// =======================
 
-// ADD TRANSACTION (ADMIN)
+// ADD TRANSACTION
 app.post("/add-transaction", requireRole(["admin"]), (req, res) => {
     const { amount, type, category, date, note } = req.body;
 
@@ -100,76 +116,53 @@ app.post("/add-transaction", requireRole(["admin"]), (req, res) => {
         return res.status(400).send("Amount and Type required");
     }
 
-    db.run(
-        "INSERT INTO transactions (amount, type, category, date, note) VALUES (?, ?, ?, ?, ?)",
-        [amount, type, category, date, note],
-        function (err) {
-            if (err) return res.status(500).send(err.message);
-            res.send("Transaction added!");
-        }
-    );
+    try {
+        db.prepare(`
+            INSERT INTO transactions (amount, type, category, date, note)
+            VALUES (?, ?, ?, ?, ?)
+        `).run(amount, type, category, date, note);
+
+        res.send("Transaction added successfully!");
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
-// GET TRANSACTIONS (WITH FILTERING)
-app.get("/transactions", requireRole(["admin", "analyst", "viewer"]), (req, res) => {
-    const { type, category, date } = req.query;
 
-    let query = "SELECT * FROM transactions WHERE 1=1";
-    let params = [];
+// GET TRANSACTIONS (with filters)
+app.get("/transactions", requireRole(["admin", "analyst"]), (req, res) => {
+    const { type, category } = req.query;
 
-    if (type) {
-        query += " AND type = ?";
-        params.push(type);
-    }
+    try {
+        let query = "SELECT * FROM transactions WHERE 1=1";
+        const params = [];
 
-    if (category) {
-        query += " AND category = ?";
-        params.push(category);
-    }
+        if (type) {
+            query += " AND type = ?";
+            params.push(type);
+        }
 
-    if (date) {
-        query += " AND date = ?";
-        params.push(date);
-    }
+        if (category) {
+            query += " AND category = ?";
+            params.push(category);
+        }
 
-    db.all(query, params, (err, rows) => {
-        if (err) return res.status(500).send(err.message);
+        const rows = db.prepare(query).all(...params);
         res.json(rows);
-    });
-});
-
-// UPDATE TRANSACTION (ADMIN)
-app.put("/update-transaction/:id", requireRole(["admin"]), (req, res) => {
-    const id = req.params.id;
-    const { amount, type, category, date, note } = req.body;
-
-    db.run(
-        "UPDATE transactions SET amount=?, type=?, category=?, date=?, note=? WHERE id=?",
-        [amount, type, category, date, note, id],
-        function (err) {
-            if (err) return res.status(500).send(err.message);
-            res.send("Transaction updated!");
-        }
-    );
-});
-
-// DELETE TRANSACTION (ADMIN)
-app.delete("/delete-transaction/:id", requireRole(["admin"]), (req, res) => {
-    const id = req.params.id;
-
-    db.run("DELETE FROM transactions WHERE id=?", id, function (err) {
-        if (err) return res.status(500).send(err.message);
-        res.send("Transaction deleted!");
-    });
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
 
-// ================= DASHBOARD =================
+// =======================
+// 📊 DASHBOARD APIs
+// =======================
 
 // SUMMARY
 app.get("/summary", requireRole(["admin", "analyst", "viewer"]), (req, res) => {
-    db.all("SELECT * FROM transactions", [], (err, rows) => {
-        if (err) return res.status(500).send(err.message);
+    try {
+        const rows = db.prepare("SELECT * FROM transactions").all();
 
         let income = 0;
         let expense = 0;
@@ -184,35 +177,48 @@ app.get("/summary", requireRole(["admin", "analyst", "viewer"]), (req, res) => {
             totalExpense: expense,
             balance: income - expense
         });
-    });
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
-// CATEGORY-WISE SUMMARY
+
+// CATEGORY SUMMARY
 app.get("/category-summary", requireRole(["admin", "analyst"]), (req, res) => {
-    db.all(
-        "SELECT category, SUM(amount) as total FROM transactions GROUP BY category",
-        [],
-        (err, rows) => {
-            if (err) return res.status(500).send(err.message);
-            res.json(rows);
-        }
-    );
+    try {
+        const rows = db.prepare(`
+            SELECT category, SUM(amount) as total
+            FROM transactions
+            GROUP BY category
+        `).all();
+
+        res.json(rows);
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
-// RECENT ACTIVITY
+
+// RECENT TRANSACTIONS
 app.get("/recent-transactions", requireRole(["admin", "analyst"]), (req, res) => {
-    db.all(
-        "SELECT * FROM transactions ORDER BY date DESC LIMIT 5",
-        [],
-        (err, rows) => {
-            if (err) return res.status(500).send(err.message);
-            res.json(rows);
-        }
-    );
+    try {
+        const rows = db.prepare(`
+            SELECT * FROM transactions
+            ORDER BY date DESC
+            LIMIT 5
+        `).all();
+
+        res.json(rows);
+    } catch (err) {
+        res.status(500).send(err.message);
+    }
 });
 
 
-// ================= SERVER =================
+// =======================
+// 🚀 SERVER
+// =======================
+
 const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
